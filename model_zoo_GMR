@@ -1,0 +1,176 @@
+
+# To use this code, you'll need to download the maxent program and Java
+# https://biodiversityinformatics.amnh.org/open_source/maxent/
+# 
+# See help from dismo package or https://www.rdocumentation.org/packages/dismo/versions/1.3-3/topics/maxent
+#--------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------
+
+#Load the required packages
+install.packages("dismo")
+install.packages("rms")
+install.packages("mgcv")
+install.packages("e1071")
+install.packages("rJava")
+install.packages("randomForest")
+library(raster)
+library(RStoolbox)
+library(rgdal)
+library(e1071)
+library(randomForest)
+library (dismo)
+library(rms)
+library(mgcv)
+library(car)
+library(rJava)
+
+#Set directory
+setwd("C:/Users/Sofia/Documents/EAGLE/Cursos/Biodiversity/Results")
+
+#--------------------------------------------------------------------------------
+#Load data sets and visualize them
+#--------------------------------------------------------------------------------
+#Load preprocessed multi-band raster (you could also stack it in R)
+allbands<- stack("C:/Users/Sofia/Documents/EAGLE/Cursos/Biodiversity/Data_sets/stack/stack_merged_wgs_new3.tif")
+names(allbands)<-c('Unique_zoonosis', 'Population_Density', 'Tree_coverage')
+
+#Load presence data
+pres_points<-readOGR("C:/Users/Sofia/Documents/EAGLE/Cursos/Biodiversity/Data_sets/Outbreaks2/outbreaks_200.shp")
+summary(pres_points)
+#we
+
+pres_points$presence<-as.numeric(pres_points$presence)
+
+#pres_df<-as.data.frame(pres_points)
+#names(pres_df)<-c('presence','x','y')
+
+print(allbands)
+
+#scale to max to avoid Error in grDevices::rgb-> color internsity
+#(https://community.rstudio.com/t/problem-with-raster-plots-rgb-from-3-raster-layers/8835)
+
+cellStats(allbands, max)
+plotRGB(allbands, scale=114267)
+
+plot(pres_points,add=TRUE, col='red')
+
+#--------------------------------------------------------------------------------
+# Naive sampling of background points
+#--------------------------------------------------------------------------------
+
+set.seed(23)
+background<-randomPoints(allbands,9000, pres_points)
+background<-as.data.frame(background)
+background$presence<-0
+background
+#name columns, so it will match your presence data
+names(background)<-c('coords.x1','coords.x2', 'presence')
+#--------------------------------------------------------------------------------
+#Spatial points data frame
+#--------------------------------------------------------------------------------
+pres_bg <-rbind(as.data.frame(pres_points), background)
+coordinates(pres_bg)<-~coords.x1+coords.x2
+projection(pres_bg) <- projection(allbands)
+
+#--------------------------------------------------------------------------------
+#Points environment extraction
+#--------------------------------------------------------------------------------
+
+pres_bg@data<- cbind(pres_bg@data, extract(allbands, pres_bg))
+pres_bg<- as(pres_bg, "data.frame")
+plot(pres_bg)
+summary(pres_bg)
+#omit na values
+pres_bg[is.na(pres_bg)] <- 2
+pres_bg<-na.omit(pres_bg)
+
+
+#--------------------------------------------------------------------------------
+#Collinearity
+#--------------------------------------------------------------------------------
+pres_bg1<-data.frame(pres_bg[,c("Unique_zoonosis", "Population_Density", "Tree_coverage", "presence")])
+
+#use the Matrix to check collinearity between predictors
+panel.cor<-function (x,y, digits =4, cor_thresh=0.7, col=c("black","red"),...){
+  usr<- par("usr")
+  on.exit(par(usr))
+  par(usr=c(0,1,0,1))
+  r<-abs(cor(x,y))
+  txt<- format(c(r, 0.123456789), digits=digits)[1]
+  text(0.5,05,txt,col=ifelse(r< cor_thresh, col[1], col[2]))
+}
+scatterplotMatrix(~.|presence, data=pres_bg1, smoother=FALSE, reg.line = FALSE, upper.panel=panel.cor)
+
+#also useful in a less visual way (collinearity = correlation coefficients above 0.7.)
+correlation<-cor(pres_bg1)
+correlation
+
+#--------------------------------------------------------------------------------
+#Modelling
+#--------------------------------------------------------------------------------
+
+me_presbg<-maxent(pres_bg[,c("Unique_zoonosis", "Population_Density", "Tree_coverage")], pres_bg["presence"])
+
+
+#--------------------------------------------------------------------------------
+#Variable importance
+#--------------------------------------------------------------------------------
+
+plot(me_presbg)
+
+mb<-data.frame(Variable=c("Population density", "Unique zoonosis","Tree Cover"), Percentage=c(75,20,5))
+
+ggplot(mb,aes(Variable, Percentage))+geom_point(color=c("red4","red", "coral1"), fill=c("coral3","red","rosybrown"), size=4)+labs(title="Variable Contribution") + theme(plot.title = element_text(hjust = 0.5))
+
+#--------------------------------------------------------------------------------
+#Response curves
+#--------------------------------------------------------------------------------
+response(me_presbg, var="Population_Density", max=2000, expand=0, main="Response curve of Population Density", sub="(people/km?)")
+response(me_presbg)
+#--------------------------------------------------------------------------------
+# Spatial Prediction
+#--------------------------------------------------------------------------------
+memap_presbg<-predict(me_presbg, allbands, args=c("outputformat=raw"), filename='maxent_prediction_test.grd')
+plot(memap_presbg)
+
+#--------------------------------------------------------------------------------
+#Cross validation
+#--------------------------------------------------------------------------------
+
+#background points
+bg <- randomPoints(allbands, 10000)
+
+#simplest way to use 'evaluate'
+e1 <- evaluate(me_presbg, p=pres_bg$presence, a=bg, x=allbands)
+plot(e2, 'ROC')
+
+# alternative 1
+# extract values
+pvtest <- data.frame(extract(allbands, pres_points))
+avtest <- data.frame(extract(allbands, bg))
+
+e2 <- evaluate(me_presbg, p=pvtest, a=avtest)
+plot(e2, 'ROC')
+
+
+
+#Alternative 2
+testp <- predict(me_presbg, pvtest)
+head(testp)
+testa <- predict(me_presbg, avtest)
+e3 <- evaluate(p=testp, a=testa)
+e3
+threshold(e3)
+plot(e3, 'ROC')
+
+
+#--------------------------------------------------------------------------------
+#Write raster
+#--------------------------------------------------------------------------------
+
+writeRaster(memap_presbg, "maxent_outbreaks_2", "GTiff")
+
+memap_presbg1<-predict(me_presbg, allbands, type="prob", filename='maxent_prediction_prob_test.grd')
+plot(memap_presbg1)
+
+
