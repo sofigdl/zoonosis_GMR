@@ -1,7 +1,7 @@
 # Zoonosis in the Greater Mekong Region (GMR)
-<p> 
+
   **Author:** Sofia Garcia
-</p>
+<br>
 This repository contains the R code for a presece-only maxent model to map possible zoonosis outbreaks in the GMR
 
 ## Functionality
